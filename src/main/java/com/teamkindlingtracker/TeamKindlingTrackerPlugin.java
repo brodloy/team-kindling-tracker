@@ -29,6 +29,7 @@ import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.HitsplatApplied;
 import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.NpcDespawned;
 import net.runelite.api.events.NpcSpawned;
 import net.runelite.client.callback.ClientThread;
@@ -54,6 +55,9 @@ public class TeamKindlingTrackerPlugin extends Plugin
 {
 	/** Maximum braziers we track (the Ice Demon room has four). */
 	static final int MAX_BRAZIERS = 4;
+
+	/** A kindling decrease within this many ticks of a "Drop" click is a drop, not a feed. */
+	private static final int DROP_WINDOW_TICKS = 2;
 
 	@Inject
 	private Client client;
@@ -117,6 +121,9 @@ public class TeamKindlingTrackerPlugin extends Plugin
 	// --- Inventory state --------------------------------------------------------
 
 	private int localKindling = 0;
+
+	/** Game tick of the last "Drop kindling" click, so drops aren't counted as feeds. */
+	private int lastKindlingDropTick = -100;
 	private final Map<Long, Integer> remoteKindling = new ConcurrentHashMap<>();
 
 	/** Cache of item id -> isKindling, to avoid repeated composition lookups. */
@@ -430,6 +437,24 @@ public class TeamKindlingTrackerPlugin extends Plugin
 	}
 
 	@Subscribe
+	public void onMenuOptionClicked(MenuOptionClicked event)
+	{
+		if (!inRoom)
+		{
+			return;
+		}
+		// A "Drop" on kindling must not be counted as a feed: in CM teams players often drop
+		// kindling for someone else to pick up / telegrab and dump themselves.
+		final String option = event.getMenuOption();
+		final String target = event.getMenuTarget();
+		if (option != null && option.equalsIgnoreCase("Drop")
+			&& target != null && Text.removeTags(target).toLowerCase().contains("kindling"))
+		{
+			lastKindlingDropTick = client.getTickCount();
+		}
+	}
+
+	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
 		final ItemContainer container = event.getItemContainer();
@@ -455,19 +480,27 @@ public class TeamKindlingTrackerPlugin extends Plugin
 			log.debug("Kindling inventory now {} (delta {})", count, delta);
 		}
 
-		// A decrease while in the room means kindling was fed to the brazier we're next to.
+		// A decrease while in the room is kindling fed to the nearest brazier — UNLESS it was
+		// just dropped on the ground, which also lowers inventory but isn't a feed.
 		if (delta < 0 && inRoom)
 		{
-			final int idx = nearestBrazier();
-			if (idx != -1)
+			if (client.getTickCount() - lastKindlingDropTick <= DROP_WINDOW_TICKS)
 			{
-				localContrib[idx] += -delta;
-				log.debug("Added {} kindling to brazier index {} (total {})", -delta, idx, localContrib[idx]);
-				broadcastContrib();
+				log.debug("Kindling decrease of {} ignored (dropped, not fed)", -delta);
 			}
 			else
 			{
-				log.debug("Kindling dropped by {} but no nearby brazier found", -delta);
+				final int idx = nearestBrazier();
+				if (idx != -1)
+				{
+					localContrib[idx] += -delta;
+					log.debug("Added {} kindling to brazier index {} (total {})", -delta, idx, localContrib[idx]);
+					broadcastContrib();
+				}
+				else
+				{
+					log.debug("Kindling decrease of {} but no nearby brazier found", -delta);
+				}
 			}
 		}
 
