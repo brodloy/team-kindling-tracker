@@ -324,17 +324,18 @@ public class TeamKindlingTrackerPlugin extends Plugin
 	{
 		if (event.getNpc() == iceDemon)
 		{
-			// Only a despawn *while dead* is a real kill. A scene reload despawns and
-			// respawns the demon too, and must NOT end the kindling phase.
-			final boolean dead = event.getNpc().isDead();
-			iceDemon = null;
-			if (dead)
+			// A despawn *while dead* is the kill: the encounter is over, so tear the room
+			// down completely - otherwise brazier objects/counts linger and get re-projected
+			// into later raid rooms on every scene reload. A despawn that is NOT a death is
+			// just a scene reload and must be ignored (the demon respawns moments later).
+			if (event.getNpc().isDead())
 			{
-				kindlingPhaseOver = true;
-				log.debug("Ice demon died - hiding above-head counts");
+				log.debug("Ice demon died - clearing room");
+				resetRoom();
 			}
 			else
 			{
+				iceDemon = null;
 				log.debug("Ice demon despawned (not dead, likely scene reload)");
 			}
 		}
@@ -356,10 +357,15 @@ public class TeamKindlingTrackerPlugin extends Plugin
 	@Subscribe
 	public void onGameStateChanged(GameStateChanged event)
 	{
+		// On a scene reload the old scene's objects are gone; drop their now-stale brazier
+		// references so they can't render as floating numbers in a later room.
+		if (event.getGameState() == GameState.LOADING)
+		{
+			brazierObjs.clear();
+		}
 		// Re-log / hop inside the room: GameObjectSpawned won't fire for already-loaded
-		// objects, so re-scan. Teardown/reset is handled in onGameTick where the raid
-		// varbit is reliably loaded, so a transient load screen never wipes counts.
-		if (event.getGameState() == GameState.LOGGED_IN)
+		// objects, so re-scan to re-acquire any braziers actually present.
+		else if (event.getGameState() == GameState.LOGGED_IN)
 		{
 			scanScene();
 		}
